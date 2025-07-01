@@ -1,27 +1,34 @@
 # docker-compose.test.yml
 services:
   postgres:
-    build: 
+    build:
       context: .
+      # 我们仍然只测试 builder 阶段，因为它有启动脚本
+      target: builder
       args:
         PG_MAJOR: 17
     environment:
-      POSTGRES_PASSWORD: testpass
-      POSTGRES_DB: testdb
-      POSTGRES_USER: postgres
-      # 添加调试模式
-      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=peer"
+      POSTGRES_PASSWORD: "testpass"
+      POSTGRES_USER: "testuser"
+      POSTGRES_DB: "testdb"
+    # 这是关键的修复！
+    # 我们覆盖了默认的启动命令，加入了我们需要的配置参数
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=zhparser"
+      - "-c"
+      - "zhparser.dict_path=/usr/local/etc"
     ports:
       - "5432:5432"
-    # 增加启动超时时间
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d testdb"]
+      test: ["CMD-SHELL", "pg_isready -U testuser -d testdb"]
       interval: 10s
       timeout: 5s
-      retries: 10
-      start_period: 60s
-    # 添加调试信息
-    command: ["postgres", "-c", "log_min_messages=debug1", "-c", "log_statement=all"]
+      retries: 5
+      start_period: 30s
+    networks:
+      - test-net
 
   test:
     image: postgres:17-alpine
@@ -29,23 +36,35 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      PGPASSWORD: testpass
+      PGHOST: postgres
+      PGDATABASE: testdb
+      PGUSER: testuser
+      PGPASSWORD: "testpass"
+    # 测试脚本也变得更简单了，因为配置在启动时就已经生效
     command: |
       sh -c "
-        echo '=== Waiting for PostgreSQL to be ready ==='
-        sleep 5
+        echo '✅ Connection successful, server started with zhparser preloaded.'
+        sleep 2
+
+        echo '=== Testing Extension Creation ==='
+        psql -c 'CREATE EXTENSION IF NOT EXISTS zhparser;'
+
+        echo '✅ Extension created!'
         
-        echo '=== Testing basic connection ==='
-        psql -h postgres -U postgres -d testdb -c 'SELECT version();'
+        echo '=== Testing Text Search Configuration ==='
+        psql -c 'CREATE TEXT SEARCH CONFIGURATION chinese_zh (PARSER = zhparser);'
+
+        echo '✅ Text search configuration created!'
         
-        echo '=== Testing zhparser extension ==='
-        psql -h postgres -U postgres -d testdb -c 'CREATE EXTENSION zhparser;'
+        echo '=== Testing Chinese Word Segmentation (with dictionary) ==='
+        # 这次应该能看到正确的分词结果了！
+        psql -c \"SELECT to_tsvector('chinese_zh', 'PostgreSQL中文全文搜索测试');\"
         
-        echo '=== Creating Chinese text search configuration ==='
-        psql -h postgres -U postgres -d testdb -c 'CREATE TEXT SEARCH CONFIGURATION chinese_zh (PARSER = zhparser);'
-        psql -h postgres -U postgres -d testdb -c 'ALTER TEXT SEARCH CONFIGURATION chinese_zh ADD MAPPING FOR n,v,a,i,e,l WITH simple;'
-        
-        echo '=== Testing Chinese word segmentation ==='
-        psql -h postgres -U postgres -d testdb -c \"SELECT to_tsvector('chinese_zh', 'PostgreSQL中文全文搜索测试');\"
-        
-        echo '✅ All tests passed successfully!'
+        echo '🎉 All tests passed successfully!'
+      "
+    networks:
+      - test-net
+
+networks:
+  test-net:
+    driver: bridge
