@@ -1,0 +1,113 @@
+# .github/workflows/build.yml
+name: Build PostgreSQL with zhparser
+
+on:
+  push:
+    branches: [ main ]
+    paths: [ 'Dockerfile', '.github/workflows/build.yml' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      pg_major:
+        description: 'PostgreSQL major version'
+        required: false
+        default: '17'
+        type: choice
+        options: ['15', '16', '17']
+  schedule:
+    - cron: '0 2 * * 1'  # 每周一检查更新
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        pg_major: [15, 16, 17]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch,suffix=-pg${{ matrix.pg_major }}
+            type=ref,event=pr,suffix=-pg${{ matrix.pg_major }}
+            type=raw,value=pg${{ matrix.pg_major }}
+            type=raw,value=pg${{ matrix.pg_major }}-{{date 'YYYYMMDD'}}
+            type=raw,value=latest,enable={{is_default_branch}},suffix=-pg${{ matrix.pg_major }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            PG_MAJOR=${{ matrix.pg_major }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=pg${{ matrix.pg_major }}
+          cache-to: type=gha,mode=max,scope=pg${{ matrix.pg_major }}
+
+      - name: Test image
+        run: |
+          # 基础测试
+          docker run --rm --platform linux/amd64 ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pg${{ matrix.pg_major }} postgres --version
+          
+          # 扩展测试
+          docker run -d --name test-pg --platform linux/amd64 \
+            -e POSTGRES_PASSWORD=testpass \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pg${{ matrix.pg_major }}
+          
+          # 等待启动
+          sleep 30
+          
+          # 测试 zhparser 扩展
+          docker exec test-pg psql -U postgres -c "CREATE EXTENSION zhparser;"
+          docker exec test-pg psql -U postgres -c "CREATE TEXT SEARCH CONFIGURATION chinese_zh (PARSER = zhparser);"
+          docker exec test-pg psql -U postgres -c "SELECT to_tsvector('chinese_zh', '测试中文分词功能');"
+          
+          # 清理
+          docker stop test-pg
+          docker rm test-pg
+
+  security-scan:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        pg_major: [15, 16, 17]
+    steps:
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pg${{ matrix.pg_major }}
+          format: 'sarif'
+          output: 'trivy-results-pg${{ matrix.pg_major }}.sarif'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results-pg${{ matrix.pg_major }}.sarif'

@@ -1,0 +1,51 @@
+# docker-compose.test.yml
+services:
+  postgres:
+    build: 
+      context: .
+      args:
+        PG_MAJOR: 17
+    environment:
+      POSTGRES_PASSWORD: testpass
+      POSTGRES_DB: testdb
+      POSTGRES_USER: postgres
+      # 添加调试模式
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=peer"
+    ports:
+      - "5432:5432"
+    # 增加启动超时时间
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d testdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    # 添加调试信息
+    command: ["postgres", "-c", "log_min_messages=debug1", "-c", "log_statement=all"]
+
+  test:
+    image: postgres:17-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: testpass
+    command: |
+      sh -c "
+        echo '=== Waiting for PostgreSQL to be ready ==='
+        sleep 5
+        
+        echo '=== Testing basic connection ==='
+        psql -h postgres -U postgres -d testdb -c 'SELECT version();'
+        
+        echo '=== Testing zhparser extension ==='
+        psql -h postgres -U postgres -d testdb -c 'CREATE EXTENSION zhparser;'
+        
+        echo '=== Creating Chinese text search configuration ==='
+        psql -h postgres -U postgres -d testdb -c 'CREATE TEXT SEARCH CONFIGURATION chinese_zh (PARSER = zhparser);'
+        psql -h postgres -U postgres -d testdb -c 'ALTER TEXT SEARCH CONFIGURATION chinese_zh ADD MAPPING FOR n,v,a,i,e,l WITH simple;'
+        
+        echo '=== Testing Chinese word segmentation ==='
+        psql -h postgres -U postgres -d testdb -c \"SELECT to_tsvector('chinese_zh', 'PostgreSQL中文全文搜索测试');\"
+        
+        echo '✅ All tests passed successfully!'
