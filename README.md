@@ -19,6 +19,12 @@ metadata:
 spec:
   instances: 3
   imageName: ghcr.io/icy37785/cnpg-zhparser:17
+
+  postgresql:
+    parameters:
+      # 这就是你在 command 里设置的参数
+      shared_preload_libraries: "zhparser"
+      zhparser.dict_path: "/usr/local/etc"
   
   bootstrap:
     initdb:

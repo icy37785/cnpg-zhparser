@@ -77,7 +77,7 @@ COPY --from=builder /usr/share/postgresql/${PG_MAJOR}/tsearch_data/*.utf8.* /usr
 RUN ldconfig
 
 # Change the uid of postgres to 26
-RUN usermod -u 26 postgres
+RUN usermod -u 1000 postgres
 
 # 统一设置权限（在 UID 修改之后）
 #RUN chown -R postgres:postgres /usr/lib/postgresql/${PG_MAJOR} && \
@@ -85,7 +85,7 @@ RUN usermod -u 26 postgres
 #    chown postgres:postgres /usr/local/lib/libscws.* && \
 #    chmod 755 /usr/lib/postgresql/${PG_MAJOR}/lib/zhparser.so
 
-USER 26
+USER 1000
 
 ENV PATH=$PATH:/usr/lib/postgresql/${PG_MAJOR}/bin
 
